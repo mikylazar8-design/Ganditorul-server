@@ -1,0 +1,14 @@
+{
+  "name": "ganditorul-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Server real pentru Ganditorul: conturi (cu verificare de email), sesiuni si chat comun intre jucatori. Inlocuieste mock-urile locale Auth.gd/Chat.gd din godot/.",
+  "scripts": {
+    "start": "node --experimental-sqlite server.js"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "cors": "^2.8.5"
+  }
+}
