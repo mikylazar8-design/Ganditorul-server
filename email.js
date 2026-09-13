@@ -1,8 +1,12 @@
 // Ganditorul - trimite codul de verificare prin Resend (fetch simplu, fara SDK).
-// Necesita RESEND_API_KEY (variabila de mediu / secret Fly.io).
+// Necesita RESEND_API_KEY (variabila de mediu, setata in Render sub Environment).
+//
+// Domeniul ganditorul.the300game.com e verificat in Resend (DKIM+SPF, 2026-09-13) -
+// trimitem de pe el, nu de pe adresa comuna de test onboarding@resend.dev (Gmail o
+// arunca tacut, fara nicio eroare vizibila - vezi PROGRESS.md pt. investigatia completa).
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
-const FROM_ADDRESS = process.env.RESEND_FROM || 'Ganditorul <onboarding@resend.dev>';
+const FROM_ADDRESS = process.env.RESEND_FROM || 'Gânditorul <noreply@ganditorul.the300game.com>';
 
 export async function sendVerificationCode(email, code) {
   if (!RESEND_API_KEY) {

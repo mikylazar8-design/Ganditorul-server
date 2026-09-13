@@ -7,7 +7,7 @@ const SESSION_SECRET = process.env.SESSION_SECRET;
 if (!SESSION_SECRET) {
   console.warn(
     'ATENTIE: SESSION_SECRET nu e setat - folosesc un secret fix, DOAR pentru dezvoltare locala. ' +
-    'Pe Fly.io seteaza-l cu `fly secrets set SESSION_SECRET=...` inainte de deploy.'
+    'Seteaza-l in Render, la Environment, inainte de deploy.'
   );
 }
 const SECRET = SESSION_SECRET || 'dev-only-secret-nu-folosi-in-productie';
