@@ -1,25 +1,41 @@
-// Ganditorul - server real: conturi (cu verificare de email), sesiuni si chat comun.
+// Ganditorul - server real: conturi (nume afisat + parola, fara email) si chat comun.
 // Inlocuieste mock-urile locale godot/autoload/Auth.gd si Chat.gd.
+//
+// Simplificat explicit de utilizator 2026-09-20: verificarea prin email (Resend) s-a
+// dovedit nefiabila in practica (niciun aderent nu primea codul, doar contul Resend
+// insusi - investigatie DMARC/deliverability abandonata odata cu asta, vezi
+// PROGRESS.md) - a fost scoasa complet, in favoarea unui model simplu nume+parola,
+// ca la majoritatea jocurilor casual. Contul devine activ imediat la inregistrare.
 
 import express from 'express';
 import cors from 'cors';
-import { db, normalizeEmail } from './db.js';
-import { hashPassword, verifyPassword, signToken, verifyToken, generateVerificationCode } from './auth.js';
-import { sendVerificationCode } from './email.js';
+import { db } from './db.js';
+import { hashPassword, verifyPassword, signToken, verifyToken } from './auth.js';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 8080;
-const VERIFICATION_TTL_SECONDS = 15 * 60;
+
+// Numele de bot (vezi godot/scripts/Bot.gd, BOT_NAMES) NU pot fi luate de un jucator
+// real - altfel s-ar putea suprapune cu rotatia de boti si ar strica exact scopul ei
+// (sa para jucatori reali distincti). Duplicat intentionat, cross-limbaj (GDScript vs.
+// Node) - trebuie sa ramana identic cu lista din Bot.gd la orice modificare acolo.
+const BOT_NAMES = new Set([
+  'fritz98', 'issa85', 'freud6', 'libeina', 'anemarie', 'luise07', 'rudy',
+  'hansi23', 'gundula', 'manfred71', 'waltraud9', 'juergen19', 'sabine84',
+  'dieter42', 'ingrid7', 'klausi', 'brunhilde', 'helmut33', 'petra09',
+  'wolfi88', 'gerda55', 'matthias12', 'ulrike6', 'reinhardt', 'monika77',
+  'ottoline', 'heidi31', 'gunther14', 'roswitha', 'bernd63',
+]);
 
 // --- reguli identice cu validarea locala din Auth.gd de azi ---
-const EMAIL_PATTERN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
-
-function validateRegistration(email, password, displayName) {
-  if (!EMAIL_PATTERN.test(String(email || ''))) return 'Introdu o adresă de email validă.';
+function validateRegistration(displayName, password) {
+  const name = String(displayName || '').trim();
+  if (!name) return 'Alege un nume afișat.';
+  if (name.length > 24) return 'Numele poate avea cel mult 24 de caractere.';
+  if (BOT_NAMES.has(name.toLowerCase())) return 'Acest nume este rezervat. Alege alt nume afișat.';
   if (String(password || '').length < 6) return 'Parola trebuie să aibă minimum 6 caractere.';
   const hasLetter = /[a-zA-Z]/.test(password);
   const hasDigit = /[0-9]/.test(password);
   if (!hasLetter || !hasDigit) return 'Parola trebuie să conțină atât litere, cât și cifre.';
-  if (!String(displayName || '').trim()) return 'Alege un nume afișat.';
   return null;
 }
 
@@ -58,37 +74,32 @@ function applyDayStreak(row) {
 
 // --- acces DB ---
 
-const getAccountStmt = db.prepare('SELECT * FROM accounts WHERE email = ?');
-const getAccountByNameStmt = db.prepare('SELECT email FROM accounts WHERE LOWER(display_name) = LOWER(?)');
+const getAccountStmt = db.prepare('SELECT * FROM accounts WHERE display_name = ?');
 const insertAccountStmt = db.prepare(`
-  INSERT INTO accounts (email, display_name, password_hash, password_salt, verification_code, verification_expires)
-  VALUES (?, ?, ?, ?, ?, ?)
+  INSERT INTO accounts (display_name, password_hash, password_salt)
+  VALUES (?, ?, ?)
 `);
-const deleteAccountStmt = db.prepare('DELETE FROM accounts WHERE email = ?');
 
-function getAccount(email) {
-  return getAccountStmt.get(normalizeEmail(email));
+function getAccount(displayName) {
+  return getAccountStmt.get(displayName);
 }
 
 function saveAccount(row) {
   db.prepare(`
     UPDATE accounts SET
-      display_name = ?, verified = ?, verification_code = ?, verification_expires = ?,
       total_points = ?, games_played = ?, xp = ?, level = ?, day_streak = ?,
       last_login_date = ?, last_match_bonus_date = ?, win_streak = ?,
       bot_games_remaining = ?, color_hex = ?
-    WHERE email = ?
+    WHERE display_name = ?
   `).run(
-    row.display_name, row.verified, row.verification_code, row.verification_expires,
     row.total_points, row.games_played, row.xp, row.level, row.day_streak,
     row.last_login_date, row.last_match_bonus_date, row.win_streak,
-    row.bot_games_remaining, row.color_hex, row.email
+    row.bot_games_remaining, row.color_hex, row.display_name
   );
 }
 
 function publicAccount(row) {
   return {
-    email: row.email,
     display_name: row.display_name,
     total_points: row.total_points,
     games_played: row.games_played,
@@ -109,104 +120,45 @@ app.use(express.json());
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
-app.post('/api/register', async (req, res) => {
-  const { email, password, display_name } = req.body || {};
-  const error = validateRegistration(email, password, display_name);
+app.post('/api/register', (req, res) => {
+  const { password } = req.body || {};
+  const displayName = String(req.body?.display_name || '').trim();
+  const error = validateRegistration(displayName, password);
   if (error) return res.json({ ok: false, error });
 
-  const key = normalizeEmail(email);
-  if (getAccount(key)) {
-    return res.json({ ok: false, error: 'Există deja un cont cu acest email.' });
-  }
-  if (getAccountByNameStmt.get(String(display_name).trim())) {
+  if (getAccount(displayName)) {
     return res.json({ ok: false, error: 'Acest nume există deja. Alege alt nume afișat.' });
   }
 
   const { hash, salt } = hashPassword(password);
-  const code = generateVerificationCode();
-  const expires = Math.floor(Date.now() / 1000) + VERIFICATION_TTL_SECONDS;
+  insertAccountStmt.run(displayName, hash, salt);
 
-  insertAccountStmt.run(key, String(display_name).trim(), hash, salt, code, expires);
-
-  try {
-    await sendVerificationCode(key, code);
-  } catch (err) {
-    deleteAccountStmt.run(key);
-    console.error('Trimitere email esuata:', err);
-    return res.json({ ok: false, error: 'Nu am putut trimite emailul de verificare. Încearcă din nou.' });
-  }
-
-  res.json({ ok: true, pending_verification: true });
-});
-
-app.post('/api/resend-code', async (req, res) => {
-  const key = normalizeEmail(req.body?.email || '');
-  const row = getAccount(key);
-  if (!row) return res.json({ ok: false, error: 'Cont inexistent.' });
-  if (row.verified) return res.json({ ok: false, error: 'Contul e deja verificat.' });
-
-  const code = generateVerificationCode();
-  const expires = Math.floor(Date.now() / 1000) + VERIFICATION_TTL_SECONDS;
-  row.verification_code = code;
-  row.verification_expires = expires;
+  const row = getAccount(displayName);
+  applyDayStreak(row);
   saveAccount(row);
-
-  try {
-    await sendVerificationCode(key, code);
-  } catch (err) {
-    console.error('Retrimitere email esuata:', err);
-    return res.json({ ok: false, error: 'Nu am putut retrimite emailul. Încearcă din nou.' });
-  }
-
-  res.json({ ok: true });
-});
-
-app.post('/api/verify', (req, res) => {
-  const key = normalizeEmail(req.body?.email || '');
-  const code = String(req.body?.code || '').trim();
-  const row = getAccount(key);
-  if (!row) return res.json({ ok: false, error: 'Cont inexistent.' });
-
-  if (!row.verified) {
-    if (!row.verification_code || row.verification_code !== code) {
-      return res.json({ ok: false, error: 'Cod incorect.' });
-    }
-    if (row.verification_expires < Math.floor(Date.now() / 1000)) {
-      return res.json({ ok: false, error: 'Codul a expirat, cere unul nou.', expired: true });
-    }
-    row.verified = 1;
-    row.verification_code = null;
-    row.verification_expires = null;
-    applyDayStreak(row);
-    saveAccount(row);
-  }
-
-  res.json({ ok: true, token: signToken(key), account: publicAccount(row) });
+  res.json({ ok: true, token: signToken(row.display_name), account: publicAccount(row) });
 });
 
 app.post('/api/login', (req, res) => {
-  const key = normalizeEmail(req.body?.email || '');
+  const displayName = String(req.body?.display_name || '').trim();
   const password = String(req.body?.password || '');
-  const row = getAccount(key);
+  const row = getAccount(displayName);
   if (!row || !verifyPassword(password, row.password_salt, row.password_hash)) {
-    return res.json({ ok: false, error: 'Email sau parolă incorecte.' });
-  }
-  if (!row.verified) {
-    return res.json({ ok: false, error: 'Email neverificat.', needs_verification: true });
+    return res.json({ ok: false, error: 'Nume sau parolă incorecte.' });
   }
 
   applyDayStreak(row);
   saveAccount(row);
-  res.json({ ok: true, token: signToken(key), account: publicAccount(row) });
+  res.json({ ok: true, token: signToken(row.display_name), account: publicAccount(row) });
 });
 
 // --- middleware de autentificare (Bearer token) pt. rutele de mai jos ---
 function requireAuth(req, res, next) {
   const header = req.get('Authorization') || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : '';
-  const email = verifyToken(token);
-  if (!email) return res.status(401).json({ ok: false, error: 'Sesiune invalidă sau expirată.' });
-  const row = getAccount(email);
+  const displayName = verifyToken(token);
+  if (!displayName) return res.status(401).json({ ok: false, error: 'Sesiune invalidă sau expirată.' });
+  const row = getAccount(displayName);
   if (!row) return res.status(401).json({ ok: false, error: 'Cont inexistent.' });
   req.account = row;
   next();

@@ -31,8 +31,8 @@ function base64url(input) {
   return Buffer.from(input).toString('base64url');
 }
 
-export function signToken(email) {
-  const payload = { email, exp: Math.floor(Date.now() / 1000) + TOKEN_LIFETIME_SECONDS };
+export function signToken(displayName) {
+  const payload = { name: displayName, exp: Math.floor(Date.now() / 1000) + TOKEN_LIFETIME_SECONDS };
   const body = base64url(JSON.stringify(payload));
   const sig = crypto.createHmac('sha256', SECRET).update(body).digest('base64url');
   return `${body}.${sig}`;
@@ -52,10 +52,6 @@ export function verifyToken(token) {
   } catch {
     return null;
   }
-  if (!payload.email || !payload.exp || payload.exp < Math.floor(Date.now() / 1000)) return null;
-  return payload.email;
-}
-
-export function generateVerificationCode() {
-  return String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+  if (!payload.name || !payload.exp || payload.exp < Math.floor(Date.now() / 1000)) return null;
+  return payload.name;
 }

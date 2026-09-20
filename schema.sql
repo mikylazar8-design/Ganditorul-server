@@ -2,15 +2,17 @@
 -- Inlocuieste user://accounts.json si user://chat_log.json (mock-uri locale).
 -- SQLite
 
+-- Cont = nume afisat + parola, fara email/verificare (simplificat explicit de
+-- utilizator 2026-09-20, dupa ce verificarea prin email s-a dovedit nefiabila -
+-- vezi PROGRESS.md pt. investigatia Resend/DMARC abandonata odata cu asta).
+-- Numele e chiar cheia primara - COLLATE NOCASE face unicitatea insensibila la
+-- majuscule direct la nivel de coloana ("Ion"/"ion" nu pot coexista), fara index
+-- separat. Restrictia ca numele sa nu se suprapuna cu un nume de bot (vezi
+-- BOT_NAMES din server.js) se verifica separat, in validateRegistration.
 CREATE TABLE IF NOT EXISTS accounts (
-  email TEXT PRIMARY KEY,             -- normalizat: strip + lowercase
-  display_name TEXT NOT NULL,
+  display_name TEXT PRIMARY KEY COLLATE NOCASE,
   password_hash TEXT NOT NULL,        -- scrypt, hex
   password_salt TEXT NOT NULL,        -- hex, per cont
-
-  verified INTEGER NOT NULL DEFAULT 0,      -- 0/1 - devine 1 la /api/verify
-  verification_code TEXT,                   -- 6 cifre, NULL dupa verificare
-  verification_expires INTEGER,             -- unix seconds, NULL dupa verificare
 
   total_points INTEGER NOT NULL DEFAULT 0,
   games_played INTEGER NOT NULL DEFAULT 0,
@@ -25,10 +27,6 @@ CREATE TABLE IF NOT EXISTS accounts (
 
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-
--- numele afisat trebuie sa fie unic (necesar in chat/clasament) - insensibil la
--- majuscule, ca "Ion" si "ion" sa nu poata coexista ca doua conturi diferite
-CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_display_name_unique ON accounts(display_name COLLATE NOCASE);
 
 CREATE TABLE IF NOT EXISTS chat_messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

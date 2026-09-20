@@ -12,7 +12,3 @@ const SCHEMA_PATH = path.join(ROOT, 'schema.sql');
 
 export const db = new DatabaseSync(DB_PATH);
 db.exec(fs.readFileSync(SCHEMA_PATH, 'utf-8'));
-
-export function normalizeEmail(email) {
-  return String(email).trim().toLowerCase();
-}
