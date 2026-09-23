@@ -11,6 +11,7 @@ import express from 'express';
 import cors from 'cors';
 import { db } from './db.js';
 import { hashPassword, verifyPassword, signToken, verifyToken } from './auth.js';
+import * as aiMatch from './ai_match.js';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 8080;
 
@@ -235,6 +236,78 @@ app.post('/api/bot-games/consume', requireAuth, (req, res) => {
   row.bot_games_remaining = Math.max(0, row.bot_games_remaining - 1);
   saveAccount(row);
   res.json({ ok: true, remaining: row.bot_games_remaining });
+});
+
+// --- Razboiul AI: puntea live de meci pt. locul AI (2026-09-23) ---
+//
+// Inlocuieste complet vechiul releu de API (CLI local / chei API de provider, sters
+// odata cu asta). Jucatorul genereaza un cod (POST /create), il duce o singura data in
+// propriul AI (orice client MCP), iar de-acolo AI-ul joaca singur prin uneltele MCP din
+// mcp-server/match_tools.js, care apeleaza rutele neautentificate de mai jos folosind
+// codul ca secret de acces - vezi server/ai_match.js pt. detalii si motivatie completa.
+const AI_MATCH_WAIT_MS_MIN = 1000;
+const AI_MATCH_WAIT_MS_MAX = 20000;
+const AI_MATCH_WAIT_MS_DEFAULT = 18000;
+
+app.post('/api/ai-match/create', requireAuth, (req, res) => {
+  const record = aiMatch.createMatch(req.account.display_name);
+  res.json({ ok: true, code: record.code });
+});
+
+app.get('/api/ai-match/:code/status', (req, res) => {
+  const record = aiMatch.getMatch(req.params.code);
+  if (!record) return res.json({ ok: false, error: 'Cod de meci necunoscut sau expirat.' });
+  res.json({ ok: true, status: record.status, ai_name: record.ai_name });
+});
+
+app.post('/api/ai-match/:code/join', (req, res) => {
+  const { record, error } = aiMatch.joinMatch(req.params.code, req.body?.ai_name);
+  if (error) return res.json({ ok: false, error });
+  res.json({ ok: true, status: record.status, ai_name: record.ai_name });
+});
+
+app.post('/api/ai-match/:code/question', (req, res) => {
+  const { question_id, question_type, question_text, options, context } = req.body || {};
+  if (!question_text) return res.json({ ok: false, error: 'Lipsește textul întrebării.' });
+  const { record, error } = aiMatch.postQuestion(req.params.code, {
+    question_id, question_type, question_text, options, context,
+  });
+  if (error) return res.json({ ok: false, error });
+  res.json({ ok: true, seq: record.seq });
+});
+
+app.get('/api/ai-match/:code/question/wait', async (req, res) => {
+  const afterSeq = Math.trunc(Number(req.query.after_seq || 0));
+  const waitMs = Math.min(
+    AI_MATCH_WAIT_MS_MAX,
+    Math.max(AI_MATCH_WAIT_MS_MIN, Math.trunc(Number(req.query.wait_ms || AI_MATCH_WAIT_MS_DEFAULT)))
+  );
+  const result = await aiMatch.waitForQuestion(req.params.code, afterSeq, waitMs);
+  if (result.error) return res.json({ ok: false, error: result.error });
+  res.json({ ok: true, ended: result.ended, question: result.question });
+});
+
+app.post('/api/ai-match/:code/answer', (req, res) => {
+  const { seq, answer } = req.body || {};
+  if (answer === undefined || answer === null || answer === '') {
+    return res.json({ ok: false, error: 'Lipsește răspunsul.' });
+  }
+  const { error } = aiMatch.submitAnswer(req.params.code, seq, answer);
+  if (error) return res.json({ ok: false, error });
+  res.json({ ok: true });
+});
+
+app.get('/api/ai-match/:code/answer', (req, res) => {
+  const seq = Math.trunc(Number(req.query.seq || 0));
+  const { answer, error } = aiMatch.getAnswer(req.params.code, seq);
+  if (error) return res.json({ ok: false, error });
+  res.json({ ok: true, answer });
+});
+
+app.post('/api/ai-match/:code/end', (req, res) => {
+  const { error } = aiMatch.endMatch(req.params.code);
+  if (error) return res.json({ ok: false, error });
+  res.json({ ok: true });
 });
 
 // --- chat comun (polling simplu - vezi motivatia in PROGRESS.md/plan: mai robust
